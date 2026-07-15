@@ -1,4 +1,4 @@
-import React, { createContext, useState, useContext, useEffect, useCallback } from 'react';
+import React, { createContext, useState, useContext, useEffect, useCallback, useRef } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 import { base44 } from '@/api/base44Client';
 
@@ -10,46 +10,62 @@ export const AuthProvider = ({ children }) => {
   const [isLoadingAuth, setIsLoadingAuth] = useState(true);
   const [authError, setAuthError] = useState(null);
   const [authChecked, setAuthChecked] = useState(false);
+  const mountedRef = useRef(true);
 
   const checkUserAuth = useCallback(async () => {
     try {
       const { data: { session } } = await supabase.auth.getSession();
 
       if (!session) {
-        setIsAuthenticated(false);
-        setUser(null);
-        setAuthChecked(true);
-        setIsLoadingAuth(false);
-        setAuthError({ type: 'auth_required', message: 'Authentication required' });
+        if (mountedRef.current) {
+          setIsAuthenticated(false);
+          setUser(null);
+          setAuthChecked(true);
+          setIsLoadingAuth(false);
+          setAuthError({ type: 'auth_required', message: 'Authentication required' });
+        }
         return false;
       }
 
       const currentUser = await base44.auth.me();
-      setUser(currentUser);
-      setIsAuthenticated(true);
-      setAuthChecked(true);
-      setIsLoadingAuth(false);
-      setAuthError(null);
+      if (mountedRef.current) {
+        setUser(currentUser);
+        setIsAuthenticated(true);
+        setAuthChecked(true);
+        setIsLoadingAuth(false);
+        setAuthError(null);
+      }
       return true;
     } catch (error) {
-      setIsLoadingAuth(false);
-      setIsAuthenticated(false);
-      setAuthChecked(true);
-      setAuthError({ type: 'auth_required', message: 'Authentication required' });
+      if (mountedRef.current) {
+        setIsLoadingAuth(false);
+        setIsAuthenticated(false);
+        setAuthChecked(true);
+        setAuthError({ type: 'auth_required', message: 'Authentication required' });
+      }
       return false;
     }
   }, []);
 
   useEffect(() => {
+    mountedRef.current = true;
+
     checkUserAuth();
 
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (session) {
-        (async () => {
+    const { data: listener } = supabase.auth.onAuthStateChange((event, session) => {
+      if (!mountedRef.current) return;
+
+      // Ignore INITIAL_SESSION — we already check via checkUserAuth
+      if (event === 'INITIAL_SESSION') return;
+
+      if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
+        if (session) {
           setIsLoadingAuth(true);
-          await checkUserAuth();
-        })();
-      } else {
+          (async () => {
+            await checkUserAuth();
+          })();
+        }
+      } else if (event === 'SIGNED_OUT') {
         setUser(null);
         setIsAuthenticated(false);
         setAuthChecked(true);
@@ -59,6 +75,7 @@ export const AuthProvider = ({ children }) => {
     });
 
     return () => {
+      mountedRef.current = false;
       listener.subscription.unsubscribe();
     };
   }, [checkUserAuth]);
