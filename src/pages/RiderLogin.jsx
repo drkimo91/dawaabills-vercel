@@ -33,39 +33,41 @@ export default function RiderLogin() {
 
       if (signInError) {
         const msg = signInError.message || "";
-        if (msg.includes("Invalid") || msg.includes("invalid")) {
+        if (msg.includes("Invalid") || msg.includes("invalid") || msg.includes("credentials")) {
           setError("اسم المستخدم أو كلمة المرور غير صحيحة");
         } else if (msg.includes("Email not confirmed")) {
           setError("البريد غير مؤكد — تواصل مع الأدمن");
-        } else {
+        } else if (msg) {
           setError(msg);
+        } else {
+          setError("اسم المستخدم أو كلمة المرور غير صحيحة");
         }
         return;
       }
 
-      if (!data.user || !data.session) {
+      if (!data?.user || !data?.session) {
         setError("تعذر إنشاء الجلسة — حاول مجدداً");
         return;
       }
 
       navigate("/", { replace: true });
     } catch (err) {
-      setError(err?.message || "حدث خطأ، حاول مجدداً");
+      const msg = typeof err === "string" ? err : (err?.message || err?.error_description || "");
+      setError(msg || "حدث خطأ غير متوقع، حاول مجدداً");
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div
-      className="min-h-screen flex items-center justify-center p-4 relative overflow-hidden"
-      dir="rtl"
-    >
+    <div className="min-h-screen flex items-center justify-center p-4 relative overflow-hidden" dir="rtl">
       <div className="absolute inset-0 bg-gradient-to-br from-teal-700 via-teal-800 to-cyan-900" />
-      <div className="absolute inset-0 opacity-20" style={{
-        backgroundImage: `radial-gradient(circle at 20% 50%, rgba(255,255,255,0.15) 0%, transparent 50%), radial-gradient(circle at 80% 20%, rgba(255,255,255,0.1) 0%, transparent 40%)`
-      }} />
-
+      <div
+        className="absolute inset-0 opacity-20"
+        style={{
+          backgroundImage: `radial-gradient(circle at 20% 50%, rgba(255,255,255,0.15) 0%, transparent 50%), radial-gradient(circle at 80% 20%, rgba(255,255,255,0.1) 0%, transparent 40%)`,
+        }}
+      />
       <div className="absolute top-10 right-10 w-32 h-32 bg-white/5 rounded-full blur-2xl animate-pulse" />
       <div className="absolute bottom-20 left-10 w-40 h-40 bg-teal-400/10 rounded-full blur-3xl" />
 
@@ -134,14 +136,14 @@ export default function RiderLogin() {
               {loading ? (
                 <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
               ) : (
-                <><LogIn className="w-5 h-5" /> دخول</>
+                <>
+                  <LogIn className="w-5 h-5" /> دخول
+                </>
               )}
             </Button>
           </form>
 
-          <p className="text-xs text-gray-400 text-center pt-1">
-            للحصول على حساب، تواصل مع مسؤول النظام
-          </p>
+          <p className="text-xs text-gray-400 text-center pt-1">للحصول على حساب، تواصل مع مسؤول النظام</p>
         </div>
       </div>
     </div>

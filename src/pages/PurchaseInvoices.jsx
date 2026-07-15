@@ -1,385 +1,361 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { base44 } from "@/api/base44Client";
+import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Plus, Search, Trash2, CheckSquare, X, ArrowUpDown } from "lucide-react";
-import InvoiceTable from "@/components/invoices/InvoiceTable";
-import InvoiceFormDialog from "@/components/invoices/InvoiceFormDialog";
-import InvoiceViewDialog from "@/components/invoices/InvoiceViewDialog";
-import ConfirmDialog from "@/components/invoices/ConfirmDialog";
-import InvoiceStats from "@/components/invoices/InvoiceStats";
+import { Label } from "@/components/ui/label";
+import { Dialog, DialogHeader, DialogTitle, DialogContent, DialogFooter } from "@/components/ui/dialog";
+import { useToast } from "@/components/ui/toaster";
 import { logActivity } from "@/lib/activityLogger";
-import { useUserRole } from "@/lib/useUserRole";
+import { FileText, Plus, Pencil, Trash2, Loader2, Filter, Eye } from "lucide-react";
 
 const BRANCHES = ["فرع زكريا", "فرع بسيسة", "فرع المنشية"];
+const INVOICE_STATUSES = ["انتظار المراجعة", "تم المراجعة", "مرفوضة"];
+const PAYMENT_TYPES = ["آجل", "كاش"];
+
+const STATUS_COLORS = {
+  "انتظار المراجعة": "bg-yellow-50 text-yellow-700 border-yellow-200",
+  "تم المراجعة": "bg-green-50 text-green-700 border-green-200",
+  "مرفوضة": "bg-red-50 text-red-700 border-red-200",
+};
+
+function Spinner() {
+  return (
+    <div className="flex items-center justify-center py-20">
+      <Loader2 className="w-8 h-8 text-teal-600 animate-spin" />
+    </div>
+  );
+}
+
+const today = new Date().toISOString().split("T")[0];
+
+const emptyForm = {
+  system_invoice_number: "",
+  supplier_name: "",
+  branch: BRANCHES[0],
+  invoice_date: today,
+  total_value: "",
+  status: "انتظار المراجعة",
+  payment_type: "آجل",
+  notes: "",
+};
 
 export default function PurchaseInvoices() {
+  const qc = useQueryClient();
+  const { toast } = useToast();
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [editingInvoice, setEditingInvoice] = useState(null);
-  const [viewInvoice, setViewInvoice] = useState(null);
-  const [viewOpen, setViewOpen] = useState(false);
-  const [filterBranch, setFilterBranch] = useState("الكل");
-  const [filterSupplier, setFilterSupplier] = useState("الكل");
-  const [search, setSearch] = useState("");
-  const [debouncedSearch, setDebouncedSearch] = useState("");
-  const searchTimerRef = useRef(null);
-  const today = new Date();
-  const defaultFrom = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().split("T")[0];
-  const defaultTo = new Date(today.getFullYear(), today.getMonth() + 1, 0).toISOString().split("T")[0];
-  const [dateFrom, setDateFrom] = useState(defaultFrom);
-  const [dateTo, setDateTo] = useState(defaultTo);
-  const [sortBy, setSortBy] = useState("newest");
-  const [currentPage, setCurrentPage] = useState(1);
-  const PAGE_SIZE = 100;
-  const [selectedIds, setSelectedIds] = useState([]);
-  const [confirmDelete, setConfirmDelete] = useState(false);
-  const [confirmSave, setConfirmSave] = useState(false);
-  const [singleDeleteId, setSingleDeleteId] = useState(null);
-  const queryClient = useQueryClient();
-  const { canSaveInvoice, canDeleteInvoice } = useUserRole();
+  const [editing, setEditing] = useState(null);
+  const [form, setForm] = useState(emptyForm);
+  const [deleteId, setDeleteId] = useState(null);
+  const [viewItem, setViewItem] = useState(null);
+  const [branchFilter, setBranchFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
 
-  // Real-time: تحديث تلقائي عند أي تغيير
-  useEffect(() => {
-    const unsub = base44.entities.PurchaseInvoice.subscribe(() => {
-      queryClient.invalidateQueries({ queryKey: ["purchase-invoices"] });
-      queryClient.invalidateQueries({ queryKey: ["pending-invoices-count"] });
-    });
-    return unsub;
-  }, []);
-
-  // debounce البحث لتجنب اللاج
-  const handleSearchChange = useCallback((value) => {
-    setSearch(value);
-    if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
-    searchTimerRef.current = setTimeout(() => setDebouncedSearch(value), 300);
-  }, []);
-
-  const { data: invoices = [], isLoading } = useQuery({
-    queryKey: ["purchase-invoices"],
-    queryFn: () => base44.entities.PurchaseInvoice.list("-created_date", 2000),
-    staleTime: 60000,
-    gcTime: 300000,
-  });
   const { data: suppliers = [] } = useQuery({
     queryKey: ["suppliers"],
-    queryFn: () => base44.entities.Supplier.list(),
+    queryFn: () => base44.entities.Supplier.list("name"),
+  });
+
+  const { data: invoices = [], isLoading } = useQuery({
+    queryKey: ["purchase-invoices", branchFilter, statusFilter],
+    queryFn: () => {
+      const filter = {};
+      if (branchFilter) filter.branch = branchFilter;
+      if (statusFilter) filter.status = statusFilter;
+      if (Object.keys(filter).length > 0) return base44.entities.PurchaseInvoice.filter(filter, "-invoice_date", 2000);
+      return base44.entities.PurchaseInvoice.list("-invoice_date", 2000);
+    },
   });
 
   const createMutation = useMutation({
-    mutationFn: async (data) => {
-      const inv = await base44.entities.PurchaseInvoice.create(data);
-      await logActivity({ action_type: "create", entity_type: "invoice", entity_id: inv?.id, entity_label: data.system_invoice_number, details: `إنشاء فاتورة ${data.system_invoice_number}` });
-      return inv;
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["purchase-invoices"] });
-      queryClient.invalidateQueries({ queryKey: ["activity-logs"] });
+    mutationFn: (payload) => base44.entities.PurchaseInvoice.create({
+      ...payload,
+      total_value: payload.total_value ? parseFloat(payload.total_value) : 0,
+    }),
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ["purchase-invoices"] });
+      qc.invalidateQueries({ queryKey: ["pending-invoices-count"] });
+      logActivity({ action_type: "create", entity_type: "purchase_invoice", entity_id: data.id, entity_label: data.system_invoice_number });
+      toast({ title: "تمت الإضافة", description: "تم إضافة الفاتورة بنجاح" });
       setDialogOpen(false);
     },
+    onError: () => toast({ title: "خطأ", description: "تعذّر إضافة الفاتورة", variant: "destructive" }),
   });
+
   const updateMutation = useMutation({
-    mutationFn: async ({ id, data }) => {
-      await base44.entities.PurchaseInvoice.update(id, data);
-      await logActivity({ action_type: "update", entity_type: "invoice", entity_id: id, entity_label: data.system_invoice_number, details: `تعديل فاتورة ${data.system_invoice_number}` });
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["purchase-invoices"] });
-      queryClient.invalidateQueries({ queryKey: ["activity-logs"] });
+    mutationFn: ({ id, payload }) => base44.entities.PurchaseInvoice.update(id, {
+      ...payload,
+      total_value: payload.total_value ? parseFloat(payload.total_value) : 0,
+    }),
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ["purchase-invoices"] });
+      qc.invalidateQueries({ queryKey: ["pending-invoices-count"] });
+      logActivity({ action_type: "update", entity_type: "purchase_invoice", entity_id: data.id, entity_label: data.system_invoice_number });
+      toast({ title: "تم التعديل", description: "تم تحديث الفاتورة" });
       setDialogOpen(false);
-      setEditingInvoice(null);
     },
+    onError: () => toast({ title: "خطأ", description: "تعذّر تحديث الفاتورة", variant: "destructive" }),
   });
+
   const deleteMutation = useMutation({
-    mutationFn: async (id) => {
-      const inv = invoices.find((i) => i.id === id);
-      await logActivity({ action_type: "delete", entity_type: "invoice", entity_id: id, entity_label: inv?.system_invoice_number || id, details: `حذف فاتورة ${inv?.system_invoice_number || ""}` });
-      await base44.entities.PurchaseInvoice.delete(id);
-      return id;
+    mutationFn: (id) => base44.entities.PurchaseInvoice.delete(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["purchase-invoices"] });
+      qc.invalidateQueries({ queryKey: ["pending-invoices-count"] });
+      logActivity({ action_type: "delete", entity_type: "purchase_invoice", entity_id: deleteId });
+      toast({ title: "تم الحذف", description: "تم حذف الفاتورة" });
+      setDeleteId(null);
     },
-    onSuccess: (id) => {
-      queryClient.setQueryData(["purchase-invoices"], (old = []) => old.filter((inv) => inv.id !== id));
-      queryClient.invalidateQueries({ queryKey: ["activity-logs"] });
-      setSelectedIds((prev) => prev.filter((s) => s !== id));
-    },
+    onError: () => toast({ title: "خطأ", description: "تعذّر حذف الفاتورة", variant: "destructive" }),
   });
 
-  const handleSubmit = (formData) => {
-    if (editingInvoice) updateMutation.mutate({ id: editingInvoice.id, data: formData });
-    else createMutation.mutate(formData);
+  const openAdd = () => {
+    setEditing(null);
+    setForm(emptyForm);
+    setDialogOpen(true);
   };
 
-  // Bulk actions
-  const executeBulkDelete = () => {
-    selectedIds.forEach((id) => deleteMutation.mutate(id));
-    setSelectedIds([]);
-  };
-
-  const executeSingleDelete = () => {
-    if (singleDeleteId) deleteMutation.mutate(singleDeleteId);
-    setSingleDeleteId(null);
-  };
-
-  const executeBulkSave = () => {
-    selectedIds.forEach((id) => {
-      const inv = invoices.find((i) => i.id === id);
-      if (inv) updateMutation.mutate({ id, data: { ...inv, status: "يتم الحفظ" } });
+  const openEdit = (inv) => {
+    setEditing(inv);
+    setForm({
+      system_invoice_number: inv.system_invoice_number || "",
+      supplier_name: inv.supplier_name || "",
+      branch: inv.branch || BRANCHES[0],
+      invoice_date: inv.invoice_date || today,
+      total_value: inv.total_value?.toString() || "",
+      status: inv.status || "انتظار المراجعة",
+      payment_type: inv.payment_type || "آجل",
+      notes: inv.notes || "",
     });
-    setSelectedIds([]);
+    setDialogOpen(true);
   };
 
-  const handleToggleSelect = (id) => {
-    setSelectedIds((prev) => prev.includes(id) ? prev.filter((s) => s !== id) : [...prev, id]);
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    if (editing) updateMutation.mutate({ id: editing.id, payload: form });
+    else createMutation.mutate(form);
   };
-
-  const handleToggleAll = (checked, rows) => {
-    if (checked) setSelectedIds(rows.map((r) => r.id));
-    else setSelectedIds([]);
-  };
-
-  const handleView = (inv) => { setViewInvoice(inv); setViewOpen(true); };
-  const handleEdit = (inv) => { setEditingInvoice(inv); setDialogOpen(true); };
-  const handleSingleDelete = (id) => { setSingleDeleteId(id); setConfirmDelete(true); };
-
-  const uniqueSuppliers = useMemo(
-    () => [...new Set(invoices.map((i) => i.supplier_name).filter(Boolean))],
-    [invoices]
-  );
-
-  const filtered = useMemo(() => {
-    const s = debouncedSearch.trim();
-    const list = invoices.filter((i) => {
-      const branchMatch = filterBranch === "الكل" || i.branch === filterBranch;
-      const supplierMatch = filterSupplier === "الكل" || i.supplier_name === filterSupplier;
-      if (s) {
-        const searchMatch =
-          i.system_invoice_number?.includes(s) ||
-          i.supplier_name?.includes(s) ||
-          i.supplier_invoice_number?.includes(s);
-        return branchMatch && supplierMatch && searchMatch;
-      }
-      const dateKey = i.invoice_date || i.created_date?.split("T")[0];
-      const fromMatch = !dateFrom || (dateKey && dateKey >= dateFrom);
-      const toMatch = !dateTo || (dateKey && dateKey <= dateTo);
-      return branchMatch && supplierMatch && fromMatch && toMatch;
-    });
-
-    return [...list].sort((a, b) => {
-      switch (sortBy) {
-        case "newest":
-          return (b.invoice_date || b.created_date || "").localeCompare(a.invoice_date || a.created_date || "");
-        case "oldest":
-          return (a.invoice_date || a.created_date || "").localeCompare(b.invoice_date || b.created_date || "");
-        case "highest":
-          return (b.total_value || 0) - (a.total_value || 0);
-        case "cash":
-          return (["كاش","انستا","فودافون"].includes(b.payment_type) ? 1 : 0) - (["كاش","انستا","فودافون"].includes(a.payment_type) ? 1 : 0);
-        case "supplier_num":
-          return (a.supplier_invoice_number || "").localeCompare(b.supplier_invoice_number || "", "ar", { numeric: true });
-        case "system_num":
-          return (a.system_invoice_number || "").localeCompare(b.system_invoice_number || "", "ar", { numeric: true });
-        default:
-          return 0;
-      }
-    });
-  }, [invoices, debouncedSearch, filterBranch, filterSupplier, dateFrom, dateTo, sortBy]);
-
-  // إعادة ضبط الصفحة عند تغيير أي فلتر أو ترتيب
-  useEffect(() => { setCurrentPage(1); }, [debouncedSearch, filterBranch, filterSupplier, dateFrom, dateTo, sortBy]);
-
-  const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
-  const pagedInvoices = filtered.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
-
-  const hasFilters = filterBranch !== "الكل" || filterSupplier !== "الكل" || search || dateFrom || dateTo;
 
   return (
-    <div dir="rtl" className="p-4 md:p-6 space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
+    <div className="p-4 md:p-6 space-y-4" dir="rtl">
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div className="flex items-center gap-2">
+          <FileText className="w-6 h-6 text-teal-600" />
           <h1 className="text-2xl font-bold text-gray-800">فواتير الشراء</h1>
-          <p className="text-gray-500 text-sm mt-0.5">
-          {filtered.length} من {invoices.length} فاتورة
-          {totalPages > 1 && <span className="text-gray-400"> — صفحة {currentPage} من {totalPages}</span>}
-        </p>
         </div>
-        {canSaveInvoice && (
-          <Button onClick={() => { setEditingInvoice(null); setDialogOpen(true); }} className="bg-teal-600 hover:bg-teal-700 text-white gap-2">
-            <Plus className="w-4 h-4" /> إضافة فاتورة
-          </Button>
-        )}
+        <Button className="bg-teal-600 hover:bg-teal-700 gap-2" onClick={openAdd}>
+          <Plus className="w-4 h-4" /> إضافة فاتورة
+        </Button>
       </div>
 
-      <InvoiceStats invoices={invoices} />
+      {/* Filters */}
+      <div className="flex items-center gap-3 flex-wrap">
+        <div className="flex items-center gap-2">
+          <Filter className="w-4 h-4 text-gray-400" />
+          <select
+            className="flex h-9 rounded-md border border-input bg-background px-3 py-1 text-sm"
+            value={branchFilter}
+            onChange={(e) => setBranchFilter(e.target.value)}
+          >
+            <option value="">كل الفروع</option>
+            {BRANCHES.map((b) => <option key={b} value={b}>{b}</option>)}
+          </select>
+        </div>
+        <select
+          className="flex h-9 rounded-md border border-input bg-background px-3 py-1 text-sm"
+          value={statusFilter}
+          onChange={(e) => setStatusFilter(e.target.value)}
+        >
+          <option value="">كل الحالات</option>
+          {INVOICE_STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
+        </select>
+      </div>
 
-      {/* Filters Row */}
-      <div className="bg-white rounded-lg border p-3 space-y-3">
-        <div className="flex flex-wrap gap-2 items-center">
-          <div className="relative flex-1 min-w-48">
-            <Search className="absolute right-3 top-2.5 w-4 h-4 text-gray-400" />
-            <Input
-              placeholder="بحث برقم الفاتورة أو المورد..."
-              value={search}
-              onChange={(e) => handleSearchChange(e.target.value)}
-              className="pr-9 pl-8 h-9"
-            />
-            {search && (
-              <button
-                onClick={() => { handleSearchChange(""); setDebouncedSearch(""); }}
-                className="absolute left-2 top-2.5 text-gray-400 hover:text-gray-600"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            )}
+      {isLoading ? (
+        <Spinner />
+      ) : invoices.length === 0 ? (
+        <Card className="p-12 text-center">
+          <FileText className="w-12 h-12 text-gray-300 mx-auto mb-3" />
+          <p className="text-gray-500">لا توجد فواتير</p>
+        </Card>
+      ) : (
+        <Card className="overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50 border-b">
+                <tr className="text-right text-gray-600">
+                  <th className="p-3 font-semibold">رقم الفاتورة</th>
+                  <th className="p-3 font-semibold">المورد</th>
+                  <th className="p-3 font-semibold">الفرع</th>
+                  <th className="p-3 font-semibold">التاريخ</th>
+                  <th className="p-3 font-semibold">القيمة</th>
+                  <th className="p-3 font-semibold">نوع الدفع</th>
+                  <th className="p-3 font-semibold">الحالة</th>
+                  <th className="p-3 font-semibold text-center">إجراءات</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                {invoices.map((inv) => (
+                  <tr key={inv.id} className="hover:bg-gray-50">
+                    <td className="p-3 font-medium text-gray-800">{inv.system_invoice_number || "—"}</td>
+                    <td className="p-3 text-gray-600">{inv.supplier_name || "—"}</td>
+                    <td className="p-3 text-gray-600">{inv.branch || "—"}</td>
+                    <td className="p-3 text-gray-500">{inv.invoice_date || "—"}</td>
+                    <td className="p-3 font-semibold text-teal-700">{(inv.total_value || 0).toLocaleString("ar-EG")} ج</td>
+                    <td className="p-3">
+                      <span className={`px-2 py-0.5 rounded-full text-xs ${inv.payment_type === "كاش" ? "bg-green-50 text-green-700" : "bg-blue-50 text-blue-700"}`}>
+                        {inv.payment_type || "—"}
+                      </span>
+                    </td>
+                    <td className="p-3">
+                      <span className={`px-2 py-0.5 rounded-full text-xs border ${STATUS_COLORS[inv.status] || "bg-gray-50 text-gray-700 border-gray-200"}`}>
+                        {inv.status || "—"}
+                      </span>
+                    </td>
+                    <td className="p-3">
+                      <div className="flex items-center justify-center gap-1">
+                        <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => setViewItem(inv)}>
+                          <Eye className="w-4 h-4 text-gray-600" />
+                        </Button>
+                        <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => openEdit(inv)}>
+                          <Pencil className="w-4 h-4 text-blue-600" />
+                        </Button>
+                        <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => setDeleteId(inv.id)}>
+                          <Trash2 className="w-4 h-4 text-red-600" />
+                        </Button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
-          <Select value={filterSupplier} onValueChange={setFilterSupplier}>
-            <SelectTrigger className="w-44 h-9"><SelectValue placeholder="كل الموردين" /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="الكل">كل الموردين</SelectItem>
-              {uniqueSuppliers.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}
-            </SelectContent>
-          </Select>
-          <div className="flex items-center gap-1.5 text-sm text-gray-600 flex-wrap">
-            {/* Quick date presets */}
-            <button
-              onClick={() => {
-                const t = new Date();
-                setDateFrom(new Date(t.getFullYear(), t.getMonth(), 1).toISOString().split("T")[0]);
-                setDateTo(new Date(t.getFullYear(), t.getMonth() + 1, 0).toISOString().split("T")[0]);
-              }}
-              className="px-2.5 py-1 rounded-full text-xs font-medium border border-teal-300 bg-teal-50 text-teal-700 hover:bg-teal-100 whitespace-nowrap"
-            >
-              هذا الشهر
-            </button>
-            <button
-              onClick={() => {
-                const t = new Date();
-                setDateFrom(new Date(t.getFullYear(), t.getMonth() - 1, 1).toISOString().split("T")[0]);
-                setDateTo(new Date(t.getFullYear(), t.getMonth(), 0).toISOString().split("T")[0]);
-              }}
-              className="px-2.5 py-1 rounded-full text-xs font-medium border border-gray-300 bg-white text-gray-600 hover:bg-gray-50 whitespace-nowrap"
-            >
-              الشهر الماضي
-            </button>
-            <span>من:</span><Input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="w-32 h-9" />
-            <span>إلى:</span><Input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="w-32 h-9" />
-          </div>
-          {hasFilters && (
-            <button onClick={() => { setDateFrom(""); setDateTo(""); setSearch(""); setDebouncedSearch(""); setFilterBranch("الكل"); setFilterSupplier("الكل"); }} className="text-xs text-red-500 hover:underline whitespace-nowrap">
-              مسح الكل
-            </button>
+        </Card>
+      )}
+
+      {/* Add/Edit Dialog */}
+      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+        <DialogHeader>
+          <DialogTitle>{editing ? "تعديل فاتورة" : "إضافة فاتورة جديدة"}</DialogTitle>
+          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setDialogOpen(false)}>✕</Button>
+        </DialogHeader>
+        <form onSubmit={handleSubmit}>
+          <DialogContent className="space-y-4">
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-1.5">
+                <Label>رقم الفاتورة *</Label>
+                <Input value={form.system_invoice_number} onChange={(e) => setForm({ ...form, system_invoice_number: e.target.value })} placeholder="رقم الفاتورة" required />
+              </div>
+              <div className="space-y-1.5">
+                <Label>المورد</Label>
+                <Input
+                  list="supplier-list"
+                  value={form.supplier_name}
+                  onChange={(e) => setForm({ ...form, supplier_name: e.target.value })}
+                  placeholder="اسم المورد"
+                />
+                <datalist id="supplier-list">
+                  {suppliers.map((s) => <option key={s.id} value={s.name} />)}
+                </datalist>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-1.5">
+                <Label>الفرع</Label>
+                <select
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  value={form.branch}
+                  onChange={(e) => setForm({ ...form, branch: e.target.value })}
+                >
+                  {BRANCHES.map((b) => <option key={b} value={b}>{b}</option>)}
+                </select>
+              </div>
+              <div className="space-y-1.5">
+                <Label>تاريخ الفاتورة</Label>
+                <Input type="date" value={form.invoice_date} onChange={(e) => setForm({ ...form, invoice_date: e.target.value })} />
+              </div>
+            </div>
+            <div className="grid grid-cols-3 gap-4">
+              <div className="space-y-1.5">
+                <Label>إجمالي القيمة (ج) *</Label>
+                <Input type="number" step="0.01" value={form.total_value} onChange={(e) => setForm({ ...form, total_value: e.target.value })} placeholder="0" required />
+              </div>
+              <div className="space-y-1.5">
+                <Label>نوع الدفع</Label>
+                <select
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  value={form.payment_type}
+                  onChange={(e) => setForm({ ...form, payment_type: e.target.value })}
+                >
+                  {PAYMENT_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+                </select>
+              </div>
+              <div className="space-y-1.5">
+                <Label>الحالة</Label>
+                <select
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  value={form.status}
+                  onChange={(e) => setForm({ ...form, status: e.target.value })}
+                >
+                  {INVOICE_STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
+                </select>
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              <Label>ملاحظات</Label>
+              <textarea
+                className="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm min-h-[70px]"
+                value={form.notes}
+                onChange={(e) => setForm({ ...form, notes: e.target.value })}
+                placeholder="ملاحظات إضافية..."
+              />
+            </div>
+          </DialogContent>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setDialogOpen(false)}>إلغاء</Button>
+            <Button type="submit" className="bg-teal-600 hover:bg-teal-700" disabled={createMutation.isPending || updateMutation.isPending}>
+              {(createMutation.isPending || updateMutation.isPending) ? <Loader2 className="w-4 h-4 animate-spin" /> : editing ? "حفظ" : "إضافة"}
+            </Button>
+          </DialogFooter>
+        </form>
+      </Dialog>
+
+      {/* View Dialog */}
+      <Dialog open={!!viewItem} onOpenChange={(v) => !v && setViewItem(null)}>
+        <DialogHeader>
+          <DialogTitle>تفاصيل الفاتورة</DialogTitle>
+          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setViewItem(null)}>✕</Button>
+        </DialogHeader>
+        <DialogContent className="space-y-3">
+          {viewItem && (
+            <div className="grid grid-cols-2 gap-3 text-sm">
+              <div><span className="text-gray-500">رقم الفاتورة:</span> <span className="font-medium">{viewItem.system_invoice_number || "—"}</span></div>
+              <div><span className="text-gray-500">المورد:</span> <span className="font-medium">{viewItem.supplier_name || "—"}</span></div>
+              <div><span className="text-gray-500">الفرع:</span> <span className="font-medium">{viewItem.branch || "—"}</span></div>
+              <div><span className="text-gray-500">التاريخ:</span> <span className="font-medium">{viewItem.invoice_date || "—"}</span></div>
+              <div><span className="text-gray-500">القيمة:</span> <span className="font-bold text-teal-700">{(viewItem.total_value || 0).toLocaleString("ar-EG")} ج</span></div>
+              <div><span className="text-gray-500">نوع الدفع:</span> <span className="font-medium">{viewItem.payment_type || "—"}</span></div>
+              <div><span className="text-gray-500">الحالة:</span> <span className="font-medium">{viewItem.status || "—"}</span></div>
+              {viewItem.notes && <div className="col-span-2"><span className="text-gray-500">ملاحظات:</span> <span>{viewItem.notes}</span></div>}
+            </div>
           )}
-        </div>
+        </DialogContent>
+      </Dialog>
 
-        {/* Branch Filter */}
-        <div className="flex gap-2 flex-wrap">
-          {["الكل", ...BRANCHES].map((b) => (
-            <button key={b} onClick={() => setFilterBranch(b)}
-              className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${filterBranch === b ? "bg-teal-600 text-white border-teal-600" : "bg-white text-gray-600 border-gray-200 hover:border-teal-300"}`}>
-              {b}
-            </button>
-          ))}
-        </div>
-
-        {/* Sort Buttons */}
-        <div className="flex gap-2 flex-wrap items-center border-t pt-2">
-          <span className="text-xs text-gray-400 flex items-center gap-1"><ArrowUpDown className="w-3 h-3" /> ترتيب:</span>
-          {[
-            { key: "newest",       label: "📅 الأحدث أولاً" },
-            { key: "oldest",       label: "📅 الأقدم أولاً" },
-            { key: "highest",      label: "💰 الأعلى قيمة" },
-            { key: "cash",         label: "💵 الكاش أولاً" },
-            { key: "supplier_num", label: "🔢 رقم المورد" },
-            { key: "system_num",   label: "🔢 رقم البرنامج" },
-          ].map(({ key, label }) => (
-            <button key={key} onClick={() => setSortBy(key)}
-              className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${sortBy === key ? "bg-indigo-600 text-white border-indigo-600" : "bg-white text-gray-600 border-gray-200 hover:border-indigo-300"}`}>
-              {label}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Bulk Actions Bar */}
-      {selectedIds.length > 0 && (
-        <div className="flex items-center gap-3 bg-teal-50 border border-teal-200 rounded-lg px-4 py-2.5">
-          <span className="text-sm font-semibold text-teal-700">تم تحديد {selectedIds.length} فاتورة</span>
-          <div className="flex gap-2 mr-auto">
-            {canSaveInvoice && (
-              <Button size="sm" variant="outline" className="border-green-400 text-green-700 hover:bg-green-50 gap-1.5" onClick={() => setConfirmSave(true)}>
-                <CheckSquare className="w-3.5 h-3.5" /> تحويل إلى "يتم الحفظ"
-              </Button>
-            )}
-            {canDeleteInvoice && (
-              <Button size="sm" variant="outline" className="border-red-400 text-red-600 hover:bg-red-50 gap-1.5" onClick={() => setConfirmDelete(true)}>
-                <Trash2 className="w-3.5 h-3.5" /> حذف المحدد
-              </Button>
-            )}
-            <button className="text-xs text-gray-500 hover:underline" onClick={() => setSelectedIds([])}>إلغاء</button>
-          </div>
-        </div>
-      )}
-
-      <InvoiceTable
-        invoices={pagedInvoices}
-        isLoading={isLoading}
-        onEdit={handleEdit}
-        onDelete={handleSingleDelete}
-        onView={handleView}
-        selectedIds={selectedIds}
-        onToggleSelect={handleToggleSelect}
-        onToggleAll={handleToggleAll}
-      />
-
-      {/* Pagination */}
-      {totalPages > 1 && (
-        <div className="flex items-center justify-center gap-2 py-2">
-          <button onClick={() => setCurrentPage(1)} disabled={currentPage === 1}
-            className="px-3 py-1.5 text-xs rounded border bg-white disabled:opacity-40 hover:bg-gray-50">««</button>
-          <button onClick={() => setCurrentPage(p => Math.max(1, p - 1))} disabled={currentPage === 1}
-            className="px-3 py-1.5 text-xs rounded border bg-white disabled:opacity-40 hover:bg-gray-50">‹ السابق</button>
-          <span className="text-sm text-gray-600 px-2">صفحة <strong>{currentPage}</strong> من <strong>{totalPages}</strong></span>
-          <button onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages}
-            className="px-3 py-1.5 text-xs rounded border bg-white disabled:opacity-40 hover:bg-gray-50">التالي ›</button>
-          <button onClick={() => setCurrentPage(totalPages)} disabled={currentPage === totalPages}
-            className="px-3 py-1.5 text-xs rounded border bg-white disabled:opacity-40 hover:bg-gray-50">»»</button>
-        </div>
-      )}
-
-      <InvoiceFormDialog
-        open={dialogOpen}
-        onOpenChange={(open) => { setDialogOpen(open); if (!open) setEditingInvoice(null); }}
-        onSubmit={handleSubmit}
-        invoice={editingInvoice}
-        isLoading={createMutation.isPending || updateMutation.isPending}
-        allInvoices={invoices}
-      />
-
-      <InvoiceViewDialog
-        open={viewOpen}
-        onOpenChange={setViewOpen}
-        invoice={viewInvoice}
-        onEdit={canSaveInvoice ? handleEdit : null}
-      />
-
-      <ConfirmDialog
-        open={confirmDelete}
-        onOpenChange={(o) => { setConfirmDelete(o); if (!o) setSingleDeleteId(null); }}
-        title="تأكيد الحذف"
-        description={singleDeleteId ? "هل أنت متأكد من حذف هذه الفاتورة؟" : `هل أنت متأكد من حذف ${selectedIds.length} فاتورة؟`}
-        onConfirm={singleDeleteId ? executeSingleDelete : executeBulkDelete}
-        confirmLabel="حذف"
-      />
-
-      <ConfirmDialog
-        open={confirmSave}
-        onOpenChange={setConfirmSave}
-        title="تأكيد التحويل"
-        description={`هل أنت متأكد من تحويل ${selectedIds.length} فاتورة إلى "يتم الحفظ"؟`}
-        onConfirm={executeBulkSave}
-        confirmLabel="تحويل"
-        confirmClass="bg-green-600 hover:bg-green-700"
-      />
+      {/* Delete Confirm */}
+      <Dialog open={!!deleteId} onOpenChange={(v) => !v && setDeleteId(null)}>
+        <DialogHeader><DialogTitle>تأكيد الحذف</DialogTitle></DialogHeader>
+        <DialogContent>
+          <p className="text-sm text-gray-600">هل أنت متأكد من حذف هذه الفاتورة؟ لا يمكن التراجع عن هذا الإجراء.</p>
+        </DialogContent>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setDeleteId(null)}>إلغاء</Button>
+          <Button variant="destructive" onClick={() => deleteMutation.mutate(deleteId)} disabled={deleteMutation.isPending}>
+            {deleteMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : "حذف"}
+          </Button>
+        </DialogFooter>
+      </Dialog>
     </div>
   );
 }

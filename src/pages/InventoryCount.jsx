@@ -1,165 +1,94 @@
-import React, { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { base44 } from "@/api/base44Client";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent } from "@/components/ui/dialog";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Upload, Users, Zap, LayoutDashboard, PackageSearch, BarChart2, CalendarDays, Boxes } from "lucide-react";
-import ProductUploader from "@/components/inventory-count/ProductUploader";
-import WeeklyScheduleForm from "@/components/inventory-count/WeeklyScheduleForm";
-import TaskGenerator from "@/components/inventory-count/TaskGenerator";
-import AdminDashboard from "@/components/inventory-count/AdminDashboard";
-import AccuracyReport from "@/components/inventory-count/AccuracyReport";
-import EmployeeScheduleView from "@/components/inventory-count/EmployeeScheduleView";
-import { useUserRole } from "@/lib/useUserRole";
-import ProductsManager from "@/components/inventory-count/ProductsManager";
+import { Card } from "@/components/ui/card";
+import { PackageSearch, Loader2, Calendar, Building2, User, CheckSquare, Target } from "lucide-react";
 
-const BRANCHES = ["فرع زكريا", "فرع بسيسة", "فرع المنشية"];
-const TODAY = new Date().toISOString().split("T")[0];
+function Spinner() {
+  return (
+    <div className="flex items-center justify-center py-20">
+      <Loader2 className="w-8 h-8 text-teal-600 animate-spin" />
+    </div>
+  );
+}
+
+const STATUS_COLORS = {
+  "مكتمل": "bg-green-50 text-green-700 border-green-200",
+  "قيد التنفيذ": "bg-yellow-50 text-yellow-700 border-yellow-200",
+  "جديد": "bg-blue-50 text-blue-700 border-blue-200",
+};
 
 export default function InventoryCount() {
-  const { isAdmin } = useUserRole();
-  const isPrivileged = isAdmin;
-
-  const [branch, setBranch] = useState("فرع زكريا");
-  const [uploadOpen, setUploadOpen] = useState(false);
-  const [scheduleOpen, setScheduleOpen] = useState(false);
-  const [generateOpen, setGenerateOpen] = useState(false);
-  const [tab, setTab] = useState("schedule");
-  const [countingStarted, setCountingStarted] = useState(false);
-
-  const { data: products = [] } = useQuery({
-    queryKey: ["inventory-products"],
-    queryFn: () => base44.entities.InventoryProduct.list(),
-    staleTime: 60000,
+  const { data: tasks = [], isLoading } = useQuery({
+    queryKey: ["inventory-count-tasks"],
+    queryFn: () => base44.entities.InventoryCountTask.list("-task_date", 1000),
   });
-
-  const { data: tasks = [] } = useQuery({
-    queryKey: ["inventory-tasks", branch],
-    queryFn: () => base44.entities.InventoryCountTask.filter({ branch }),
-    staleTime: 15000,
-  });
-
-  // Find the most relevant task: in-progress first, then any scheduled (not expired)
-  const isNotExpired = (t) => {
-    const end = new Date(t.task_date + "T23:59:59");
-    return (new Date() - end) / (1000 * 60 * 60) <= 24;
-  };
-  const todayTask = tasks.find(t => t.status === "جاري") ||
-    tasks.filter(t => t.status === "مجدول" && isNotExpired(t))
-      .sort((a, b) => a.task_date.localeCompare(b.task_date))[0] ||
-    tasks.find(t => t.task_date === TODAY);
-  const branchProducts = products.filter(p => p.branch === branch && p.is_active !== false);
 
   return (
-    <div className="p-4 md:p-6" dir="rtl">
-      {/* Header */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-6">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-teal-600 flex items-center justify-center">
-            <PackageSearch className="w-5 h-5 text-white" />
-          </div>
-          <div>
-            <h1 className="text-xl font-bold text-gray-800">الجرد الدوري</h1>
-            <p className="text-xs text-gray-500">{branchProducts.length} صنف — {branch}</p>
-          </div>
-        </div>
-
-        <div className="flex flex-wrap gap-2 items-center">
-          <Select value={branch} onValueChange={v => { setBranch(v); setCountingStarted(false); }}>
-            <SelectTrigger className="w-40 border-teal-300 text-teal-700 font-semibold">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {BRANCHES.map(b => <SelectItem key={b} value={b}>{b}</SelectItem>)}
-            </SelectContent>
-          </Select>
-
-          {isPrivileged && (
-            <>
-              <Button size="sm" variant="outline" className="gap-1 text-xs" onClick={() => setUploadOpen(true)}>
-                <Upload className="w-3.5 h-3.5" /> رفع أصناف
-              </Button>
-              <Button size="sm" variant="outline" className="gap-1 text-xs" onClick={() => setScheduleOpen(true)}>
-                <Users className="w-3.5 h-3.5" /> الجدول الأسبوعي
-              </Button>
-              <Button size="sm" className="gap-1 text-xs bg-teal-600 hover:bg-teal-700" onClick={() => setGenerateOpen(true)}>
-                <Zap className="w-3.5 h-3.5" /> توليد مهمة
-              </Button>
-            </>
-          )}
-        </div>
+    <div className="p-4 md:p-6 space-y-4" dir="rtl">
+      <div className="flex items-center gap-2">
+        <PackageSearch className="w-6 h-6 text-teal-600" />
+        <h1 className="text-2xl font-bold text-gray-800">الجرد الدوري</h1>
       </div>
 
-      {/* Tabs */}
-      <Tabs value={tab} onValueChange={setTab}>
-        <TabsList className="mb-5 gap-2 bg-transparent p-0 flex flex-wrap">
-          {isPrivileged && (
-            <TabsTrigger value="dashboard" className="rounded-lg px-4 py-2 text-sm font-semibold border data-[state=active]:bg-gray-800 data-[state=active]:text-white data-[state=active]:border-gray-800 border-gray-300 text-gray-600 bg-white gap-1.5">
-              <LayoutDashboard className="w-4 h-4" /> لوحة المدير
-            </TabsTrigger>
-          )}
+      {isLoading ? (
+        <Spinner />
+      ) : tasks.length === 0 ? (
+        <Card className="p-12 text-center">
+          <PackageSearch className="w-12 h-12 text-gray-300 mx-auto mb-3" />
+          <p className="text-gray-500">لا توجد مهام جرد</p>
+        </Card>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {tasks.map((task) => {
+            const itemsCount = task.items_count || 0;
+            const completedCount = task.completed_count || 0;
+            const accuracy = task.accuracy_rate != null ? Math.round(task.accuracy_rate) : (itemsCount > 0 ? Math.round((completedCount / itemsCount) * 100) : 0);
+            return (
+              <Card key={task.id} className="p-4 space-y-3">
+                <div className="flex items-start justify-between">
+                  <div>
+                    <p className="font-bold text-gray-800 flex items-center gap-1">
+                      <Calendar className="w-4 h-4 text-gray-400" />
+                      {task.task_date ? new Date(task.task_date).toLocaleDateString("ar-EG") : "—"}
+                    </p>
+                    <div className="flex items-center gap-1 text-xs text-gray-500 mt-1">
+                      <Building2 className="w-3 h-3" />
+                      {task.branch || "—"}
+                    </div>
+                  </div>
+                  <span className={`px-2 py-1 rounded-full text-xs border ${STATUS_COLORS[task.status] || "bg-gray-50 text-gray-700 border-gray-200"}`}>
+                    {task.status || "—"}
+                  </span>
+                </div>
 
-          <TabsTrigger value="schedule" className="rounded-lg px-4 py-2 text-sm font-semibold border data-[state=active]:bg-teal-700 data-[state=active]:text-white data-[state=active]:border-teal-700 border-gray-300 text-gray-600 bg-white gap-1.5">
-            <CalendarDays className="w-4 h-4" /> مواعيد الجرد
-          </TabsTrigger>
-          {isPrivileged && (
-            <TabsTrigger value="report" className="rounded-lg px-4 py-2 text-sm font-semibold border data-[state=active]:bg-gray-800 data-[state=active]:text-white data-[state=active]:border-gray-800 border-gray-300 text-gray-600 bg-white gap-1.5">
-              <BarChart2 className="w-4 h-4" /> تقرير الدقة
-            </TabsTrigger>
-          )}
-          {isPrivileged && (
-            <TabsTrigger value="products" className="rounded-lg px-4 py-2 text-sm font-semibold border data-[state=active]:bg-gray-800 data-[state=active]:text-white data-[state=active]:border-gray-800 border-gray-300 text-gray-600 bg-white gap-1.5">
-              <Boxes className="w-4 h-4" /> إدارة الأصناف
-            </TabsTrigger>
-          )}
-        </TabsList>
+                <div className="space-y-1.5 text-sm">
+                  <div className="flex items-center justify-between">
+                    <span className="flex items-center gap-1 text-gray-500"><User className="w-3.5 h-3.5" /> الموظف</span>
+                    <span className="font-medium">{task.assigned_employee || "—"}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="flex items-center gap-1 text-gray-500"><CheckSquare className="w-3.5 h-3.5" /> التقدم</span>
+                    <span className="font-medium">{completedCount} / {itemsCount}</span>
+                  </div>
+                </div>
 
-        {isPrivileged && (
-          <TabsContent value="dashboard">
-            <AdminDashboard />
-          </TabsContent>
-        )}
-
-        <TabsContent value="schedule">
-          <EmployeeScheduleView />
-        </TabsContent>
-
-        {isPrivileged && (
-          <TabsContent value="report">
-            <AccuracyReport branch={branch} />
-          </TabsContent>
-        )}
-        {isPrivileged && (
-          <TabsContent value="products">
-            <ProductsManager />
-          </TabsContent>
-        )}
-      </Tabs>
-
-      {/* Dialogs */}
-      <Dialog open={uploadOpen} onOpenChange={setUploadOpen}>
-        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto" dir="rtl">
-          <ProductUploader onClose={() => setUploadOpen(false)} />
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={scheduleOpen} onOpenChange={setScheduleOpen}>
-        <DialogContent className="max-w-md max-h-[90vh] overflow-y-auto" dir="rtl">
-          <WeeklyScheduleForm branch={branch} onClose={() => setScheduleOpen(false)} />
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={generateOpen} onOpenChange={setGenerateOpen}>
-        <DialogContent className="max-w-md" dir="rtl">
-          <TaskGenerator
-            branch={branch}
-            products={products}
-            onDone={() => setGenerateOpen(false)}
-          />
-        </DialogContent>
-      </Dialog>
+                <div>
+                  <div className="flex justify-between text-xs mb-1">
+                    <span className="text-gray-500 flex items-center gap-1"><Target className="w-3 h-3" /> نسبة الإنجاز</span>
+                    <span className={`font-bold ${accuracy >= 100 ? "text-green-600" : accuracy >= 50 ? "text-yellow-600" : "text-red-600"}`}>{accuracy}%</span>
+                  </div>
+                  <div className="w-full h-2 bg-gray-200 rounded-full overflow-hidden">
+                    <div
+                      className={`h-2 rounded-full transition-all ${accuracy >= 100 ? "bg-green-500" : accuracy >= 50 ? "bg-yellow-400" : "bg-red-400"}`}
+                      style={{ width: `${Math.min(accuracy, 100)}%` }}
+                    />
+                  </div>
+                </div>
+              </Card>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

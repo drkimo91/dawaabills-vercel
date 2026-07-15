@@ -1,170 +1,221 @@
 import { useState } from "react";
-import { useUserRole } from "@/lib/useUserRole";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { base44 } from "@/api/base44Client";
-import { CalendarCheck, Route, BarChart3, PieChart, Users, UserCog, ShieldAlert, Clock } from "lucide-react";
-import CheckInScreen from "@/components/attendance/CheckInScreen";
-import TripScreen from "@/components/trips/TripScreen";
-import RiderStatsScreen from "@/components/trips/RiderStatsScreen";
-import RiderScheduleTable from "@/components/delivery/RiderScheduleTable";
-import SupervisorBoard from "@/components/delivery/SupervisorBoard";
-import AdminTripsBoard from "@/components/trips/AdminTripsBoard";
-import AdminRiderAnalytics from "@/components/trips/AdminRiderAnalytics";
-import DeliveryAccountsManager from "@/components/delivery/DeliveryAccountsManager";
-import RiderBranchSelector from "@/components/delivery/RiderBranchSelector";
+import { Card } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Dialog, DialogHeader, DialogTitle, DialogContent, DialogFooter } from "@/components/ui/dialog";
+import { useToast } from "@/components/ui/toaster";
+import { logActivity } from "@/lib/activityLogger";
+import { Bike, Plus, Pencil, Trash2, Loader2, Phone, Building2, Circle, CircleDot } from "lucide-react";
+
+const BRANCHES = ["فرع زكريا", "فرع بسيسة", "فرع المنشية"];
+
+function Spinner() {
+  return (
+    <div className="flex items-center justify-center py-20">
+      <Loader2 className="w-8 h-8 text-teal-600 animate-spin" />
+    </div>
+  );
+}
+
+const emptyForm = { name: "", branch: BRANCHES[0], phone: "", is_active: true };
 
 export default function DeliveryRiders() {
-  const { isAdmin, isDeliveryRider, isDeliverySupervisor, isDeliveryAdmin, hasDeliveryAccess, user } = useUserRole();
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [editing, setEditing] = useState(null);
+  const [form, setForm] = useState(emptyForm);
+  const [deleteId, setDeleteId] = useState(null);
 
-  // المستخدم لم يُعيَّن له دور بعد
-  if (user && !hasDeliveryAccess) {
-    return (
-      <div className="min-h-[70vh] flex items-center justify-center p-8" dir="rtl">
-        <div className="text-center max-w-sm">
-          <ShieldAlert className="w-16 h-16 text-gray-300 mx-auto mb-4" />
-          <h2 className="text-xl font-bold text-gray-700 mb-2">بانتظار تفعيل حسابك</h2>
-          <p className="text-gray-500">لم يتم تفعيل صلاحياتك في وحدة المناديب بعد. تواصل مع الإدارة لتفعيل حسابك.</p>
-        </div>
-      </div>
-    );
-  }
-
-  // أدمن الديليفري — مثل Admin الكامل
-  if (isDeliveryAdmin || isAdmin) {
-    return <AdminView user={user} />;
-  }
-
-  // مشرف
-  if (isDeliverySupervisor) {
-    return <SupervisorView user={user} />;
-  }
-
-  // مندوب
-  if (isDeliveryRider) {
-    return <RiderView user={user} />;
-  }
-
-  // لا يزال يتحمل
-  return (
-    <div className="flex items-center justify-center min-h-[60vh]">
-      <div className="w-8 h-8 border-4 border-gray-200 border-t-teal-600 rounded-full animate-spin" />
-    </div>
-  );
-}
-
-// ============ واجهة الأدمن ============
-function AdminView({ user }) {
-  const [tab, setTab] = useState("status");
-  return (
-    <div className="w-full">
-      <div className="px-3 md:px-6 pt-3 md:pt-4 border-b flex overflow-x-auto scrollbar-hide gap-1 pb-0">
-        {[
-          { key: "status", icon: Users, label: "حالة المناديب" },
-          { key: "trips", icon: Route, label: "الحركات" },
-          { key: "analytics", icon: PieChart, label: "التحليلات" },
-          { key: "accounts", icon: UserCog, label: "إدارة الحسابات" },
-        ].map(({ key, icon: Icon, label }) => (
-          <button
-            key={key}
-            onClick={() => setTab(key)}
-            className={`flex items-center gap-1.5 whitespace-nowrap px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${tab === key ? "border-teal-600 text-teal-700" : "border-transparent text-gray-500 hover:text-gray-700"}`}
-          >
-            <Icon className="w-4 h-4" /> {label}
-          </button>
-        ))}
-      </div>
-      <div style={{ display: tab === "status" ? undefined : "none" }}><SupervisorBoard actingUser={user} /></div>
-      <div style={{ display: tab === "trips" ? undefined : "none" }}><AdminTripsBoard /></div>
-      <div style={{ display: tab === "analytics" ? undefined : "none" }}><AdminRiderAnalytics /></div>
-      <div style={{ display: tab === "accounts" ? undefined : "none" }}><DeliveryAccountsManager /></div>
-    </div>
-  );
-}
-
-// ============ واجهة المشرف ============
-function SupervisorView({ user }) {
-  return (
-    <div className="w-full">
-      <SupervisorBoard actingUser={user} />
-    </div>
-  );
-}
-
-// ============ واجهة المندوب ============
-function RiderView({ user }) {
-  const [tab, setTab] = useState("trips");
-  // جلب سجل المندوب المرتبط بهذا الحساب
-  const { data: rider, isLoading } = useQuery({
-    queryKey: ["my-rider-linked", user?.id, user?.linked_rider_id],
-    queryFn: async () => {
-      if (user?.linked_rider_id) {
-        const results = await base44.entities.Rider.filter({ id: user.linked_rider_id });
-        if (results[0]) return results[0];
-      }
-      // fallback: البحث بـ user_id
-      const results = await base44.entities.Rider.filter({ user_id: user.id });
-      return results[0] || null;
-    },
-    enabled: !!user?.id,
+  const { data: riders = [], isLoading } = useQuery({
+    queryKey: ["riders"],
+    queryFn: () => base44.entities.Rider.list("name"),
   });
 
-  if (isLoading) {
-    return (
-      <div className="flex items-center justify-center min-h-[60vh]">
-        <div className="w-8 h-8 border-4 border-gray-200 border-t-teal-600 rounded-full animate-spin" />
-      </div>
-    );
-  }
+  const createMutation = useMutation({
+    mutationFn: (payload) => base44.entities.Rider.create(payload),
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ["riders"] });
+      logActivity({ action_type: "create", entity_type: "rider", entity_id: data.id, entity_label: data.name });
+      toast({ title: "تمت الإضافة", description: "تم إضافة المندوب بنجاح" });
+      setDialogOpen(false);
+    },
+    onError: () => toast({ title: "خطأ", description: "تعذّر إضافة المندوب", variant: "destructive" }),
+  });
 
-  if (!rider) {
-    return (
-      <div className="min-h-[70vh] flex items-center justify-center p-8" dir="rtl">
-        <div className="text-center max-w-sm">
-          <ShieldAlert className="w-14 h-14 text-gray-300 mx-auto mb-4" />
-          <h2 className="text-lg font-bold text-gray-700 mb-2">لم يتم ربط حسابك بسجل مندوب</h2>
-          <p className="text-gray-500">تواصل مع الأدمن لربط حسابك بسجل المندوب الخاص بك.</p>
-        </div>
-      </div>
-    );
-  }
+  const updateMutation = useMutation({
+    mutationFn: ({ id, payload }) => base44.entities.Rider.update(id, payload),
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ["riders"] });
+      logActivity({ action_type: "update", entity_type: "rider", entity_id: data.id, entity_label: data.name });
+      toast({ title: "تم التعديل", description: "تم تحديث بيانات المندوب" });
+      setDialogOpen(false);
+    },
+    onError: () => toast({ title: "خطأ", description: "تعذّر تحديث المندوب", variant: "destructive" }),
+  });
 
-  const riderTabs = [
-    { key: "trips", icon: Route, label: "الحركات", short: "حركة" },
-    { key: "attendance", icon: CalendarCheck, label: "الحضور", short: "حضور" },
-    { key: "schedule", icon: Clock, label: "مواعيدي", short: "مواعيد" },
-    { key: "stats", icon: BarChart3, label: "إحصائياتي", short: "إحصاء" },
-  ];
+  const deleteMutation = useMutation({
+    mutationFn: (id) => base44.entities.Rider.delete(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["riders"] });
+      logActivity({ action_type: "delete", entity_type: "rider", entity_id: deleteId });
+      toast({ title: "تم الحذف", description: "تم حذف المندوب" });
+      setDeleteId(null);
+    },
+    onError: () => toast({ title: "خطأ", description: "تعذّر حذف المندوب", variant: "destructive" }),
+  });
+
+  const toggleActiveMutation = useMutation({
+    mutationFn: ({ id, is_active }) => base44.entities.Rider.update(id, { is_active }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["riders"] }),
+  });
+
+  const openAdd = () => {
+    setEditing(null);
+    setForm(emptyForm);
+    setDialogOpen(true);
+  };
+
+  const openEdit = (r) => {
+    setEditing(r);
+    setForm({ name: r.name || "", branch: r.branch || BRANCHES[0], phone: r.phone || "", is_active: r.is_active !== false });
+    setDialogOpen(true);
+  };
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    const payload = { name: form.name, branch: form.branch, phone: form.phone, is_active: form.is_active };
+    if (editing) updateMutation.mutate({ id: editing.id, payload });
+    else createMutation.mutate(payload);
+  };
 
   return (
-    <div className="w-full">
-      <div className="sticky top-[52px] md:top-0 z-20 bg-white border-b px-2 md:px-4 py-1.5 flex items-center justify-between gap-2">
-        <div className="flex gap-0 flex-1">
-          {riderTabs.map(({ key, icon: Icon, label, short }) => (
-            <button
-              key={key}
-              onClick={() => setTab(key)}
-              className={`flex-1 flex items-center justify-center gap-1 py-2.5 text-xs md:text-sm font-medium border-b-2 transition-colors ${tab === key ? "border-teal-600 text-teal-700" : "border-transparent text-gray-500 hover:text-gray-700"}`}
-            >
-              <Icon className="w-4 h-4 shrink-0" />
-              <span className="hidden xs:inline">{label}</span>
-              <span className="xs:hidden">{short}</span>
-            </button>
+    <div className="p-4 md:p-6 space-y-4" dir="rtl">
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div className="flex items-center gap-2">
+          <Bike className="w-6 h-6 text-teal-600" />
+          <h1 className="text-2xl font-bold text-gray-800">مناديب التوصيل</h1>
+        </div>
+        <Button className="bg-teal-600 hover:bg-teal-700 gap-2" onClick={openAdd}>
+          <Plus className="w-4 h-4" /> إضافة مندوب
+        </Button>
+      </div>
+
+      {isLoading ? (
+        <Spinner />
+      ) : riders.length === 0 ? (
+        <Card className="p-12 text-center">
+          <Bike className="w-12 h-12 text-gray-300 mx-auto mb-3" />
+          <p className="text-gray-500">لا يوجد مناديب بعد</p>
+        </Card>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {riders.map((r) => (
+            <Card key={r.id} className="p-4 space-y-3">
+              <div className="flex items-start justify-between">
+                <div className="flex items-center gap-3">
+                  <div className={`w-10 h-10 rounded-full flex items-center justify-center ${r.is_active !== false ? "bg-teal-100" : "bg-gray-100"}`}>
+                    <Bike className={`w-5 h-5 ${r.is_active !== false ? "text-teal-600" : "text-gray-400"}`} />
+                  </div>
+                  <div>
+                    <p className="font-bold text-gray-800">{r.name || "—"}</p>
+                    <p className="text-xs text-gray-500 flex items-center gap-1">
+                      <Building2 className="w-3 h-3" /> {r.branch || "—"}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => toggleActiveMutation.mutate({ id: r.id, is_active: !(r.is_active !== false) })}
+                  className="text-xs flex items-center gap-1"
+                >
+                  {r.is_active !== false ? (
+                    <span className="flex items-center gap-1 text-green-600"><CircleDot className="w-3.5 h-3.5" /> نشط</span>
+                  ) : (
+                    <span className="flex items-center gap-1 text-gray-400"><Circle className="w-3.5 h-3.5" /> غير نشط</span>
+                  )}
+                </button>
+              </div>
+
+              <div className="flex items-center gap-1 text-sm text-gray-600" dir="ltr">
+                <Phone className="w-3.5 h-3.5 text-gray-400" />
+                {r.phone || "—"}
+              </div>
+
+              <div className="flex gap-2 pt-1 border-t">
+                <Button size="sm" variant="outline" className="flex-1 gap-1" onClick={() => openEdit(r)}>
+                  <Pencil className="w-3.5 h-3.5" /> تعديل
+                </Button>
+                <Button size="sm" variant="ghost" className="text-red-600" onClick={() => setDeleteId(r.id)}>
+                  <Trash2 className="w-3.5 h-3.5" />
+                </Button>
+              </div>
+            </Card>
           ))}
         </div>
-        <RiderBranchSelector rider={rider} />
-      </div>
-      <div style={{ display: tab === "trips" ? undefined : "none" }}>
-        <TripScreen rider={rider} actingUser={user} isSupervisor={false} />
-      </div>
-      <div style={{ display: tab === "attendance" ? undefined : "none" }}>
-        <CheckInScreen rider={rider} actingUser={user} isSupervisor={false} />
-      </div>
-      <div style={{ display: tab === "schedule" ? undefined : "none" }}>
-        <RiderScheduleTable riders={[rider]} canEdit={true} singleRider={rider} />
-      </div>
-      <div style={{ display: tab === "stats" ? undefined : "none" }}>
-        <RiderStatsScreen />
-      </div>
+      )}
+
+      {/* Add/Edit Dialog */}
+      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+        <DialogHeader>
+          <DialogTitle>{editing ? "تعديل مندوب" : "إضافة مندوب جديد"}</DialogTitle>
+          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setDialogOpen(false)}>✕</Button>
+        </DialogHeader>
+        <form onSubmit={handleSubmit}>
+          <DialogContent className="space-y-4">
+            <div className="space-y-1.5">
+              <Label>اسم المندوب *</Label>
+              <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="اسم المندوب" required />
+            </div>
+            <div className="space-y-1.5">
+              <Label>الفرع</Label>
+              <select
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                value={form.branch}
+                onChange={(e) => setForm({ ...form, branch: e.target.value })}
+              >
+                {BRANCHES.map((b) => <option key={b} value={b}>{b}</option>)}
+              </select>
+            </div>
+            <div className="space-y-1.5">
+              <Label>رقم الهاتف</Label>
+              <Input value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} placeholder="01xxxxxxxxx" dir="ltr" />
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                id="rider-active"
+                checked={form.is_active}
+                onChange={(e) => setForm({ ...form, is_active: e.target.checked })}
+                className="w-4 h-4 accent-teal-600"
+              />
+              <Label htmlFor="rider-active">مندوب نشط</Label>
+            </div>
+          </DialogContent>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setDialogOpen(false)}>إلغاء</Button>
+            <Button type="submit" className="bg-teal-600 hover:bg-teal-700" disabled={createMutation.isPending || updateMutation.isPending}>
+              {(createMutation.isPending || updateMutation.isPending) ? <Loader2 className="w-4 h-4 animate-spin" /> : editing ? "حفظ" : "إضافة"}
+            </Button>
+          </DialogFooter>
+        </form>
+      </Dialog>
+
+      {/* Delete Confirm */}
+      <Dialog open={!!deleteId} onOpenChange={(v) => !v && setDeleteId(null)}>
+        <DialogHeader><DialogTitle>تأكيد الحذف</DialogTitle></DialogHeader>
+        <DialogContent>
+          <p className="text-sm text-gray-600">هل أنت متأكد من حذف هذا المندوب؟</p>
+        </DialogContent>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setDeleteId(null)}>إلغاء</Button>
+          <Button variant="destructive" onClick={() => deleteMutation.mutate(deleteId)} disabled={deleteMutation.isPending}>
+            {deleteMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : "حذف"}
+          </Button>
+        </DialogFooter>
+      </Dialog>
     </div>
   );
 }

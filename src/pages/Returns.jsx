@@ -1,261 +1,171 @@
-import { useState, useEffect, useMemo } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { base44 } from "@/api/base44Client";
+import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Plus, Search, Eye, RefreshCw, RotateCcw, AlertTriangle } from "lucide-react";
-import { useUserRole } from "@/lib/useUserRole";
-import ReturnFormDialog from "@/components/returns/ReturnFormDialog";
-import ReturnDetailDialog from "@/components/returns/ReturnDetailDialog";
+import { Dialog, DialogHeader, DialogTitle, DialogContent } from "@/components/ui/dialog";
+import { useToast } from "@/components/ui/toaster";
+import { logActivity } from "@/lib/activityLogger";
+import { RotateCcw, Loader2, Eye, Filter, Package } from "lucide-react";
 
-const BRANCHES = ["فرع زكريا", "فرع بسيسة", "فرع المنشية"];
+const RETURN_STATUSES = ["انتظار", "تم الاستلام", "مرفوض", "تم المعالجة"];
 
-const STATUS_CONFIG = {
-  Pending: { label: "في الانتظار", color: "bg-yellow-100 text-yellow-800 border-yellow-200" },
-  "Under Review": { label: "جاري المراجعة", color: "bg-blue-100 text-blue-800 border-blue-200" },
-  Approved: { label: "معتمد", color: "bg-green-100 text-green-800 border-green-200" },
-  Returned: { label: "تم التنفيذ", color: "bg-teal-100 text-teal-800 border-teal-200" },
-  Rejected: { label: "مرفوض", color: "bg-red-100 text-red-800 border-red-200" },
+const STATUS_COLORS = {
+  "انتظار": "bg-yellow-50 text-yellow-700 border-yellow-200",
+  "تم الاستلام": "bg-blue-50 text-blue-700 border-blue-200",
+  "مرفوض": "bg-red-50 text-red-700 border-red-200",
+  "تم المعالجة": "bg-green-50 text-green-700 border-green-200",
 };
 
-const PAGE_SIZE = 20;
+function Spinner() {
+  return (
+    <div className="flex items-center justify-center py-20">
+      <Loader2 className="w-8 h-8 text-teal-600 animate-spin" />
+    </div>
+  );
+}
 
 export default function Returns() {
-  const [formOpen, setFormOpen] = useState(false);
-  const [detailOpen, setDetailOpen] = useState(false);
-  const [selectedReturn, setSelectedReturn] = useState(null);
-  const [filterStatus, setFilterStatus] = useState("الكل");
-  const [filterBranch, setFilterBranch] = useState("الكل");
-  const [search, setSearch] = useState("");
-  const [page, setPage] = useState(1);
-  const queryClient = useQueryClient();
-  const { isManager, user } = useUserRole();
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  const [statusFilter, setStatusFilter] = useState("");
+  const [detailItem, setDetailItem] = useState(null);
 
-  useEffect(() => {
-    const unsub = base44.entities.Return.subscribe(() => {
-      queryClient.invalidateQueries({ queryKey: ["returns"] });
-    });
-    return unsub;
-  }, []);
-
-  const { data: allReturns = [], isLoading } = useQuery({
-    queryKey: ["returns"],
-    queryFn: () => base44.entities.Return.list("-created_date", 500),
-    staleTime: 20000,
+  const { data: returns = [], isLoading } = useQuery({
+    queryKey: ["returns", statusFilter],
+    queryFn: () => {
+      if (statusFilter) return base44.entities.Return.filter({ status: statusFilter }, "-created_date");
+      return base44.entities.Return.list("-created_date", 1000);
+    },
   });
 
-  const filtered = allReturns.filter((r) => {
-    const statusMatch = filterStatus === "الكل" || r.status === filterStatus;
-    const branchMatch = filterBranch === "الكل" || r.branch_name === filterBranch;
-    const searchMatch =
-      !search ||
-      r.return_number?.includes(search) ||
-      r.invoice_number?.includes(search) ||
-      r.supplier_name?.includes(search) ||
-      r.employee_name?.includes(search);
-    return statusMatch && branchMatch && searchMatch;
+  const statusMutation = useMutation({
+    mutationFn: ({ id, status }) => base44.entities.Return.update(id, { status }),
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ["returns"] });
+      logActivity({ action_type: "update", entity_type: "return", entity_id: data.id, entity_label: data.return_number });
+      toast({ title: "تم التحديث", description: "تم تحديث حالة المرتجع" });
+    },
+    onError: () => toast({ title: "خطأ", description: "تعذّر تحديث المرتجع", variant: "destructive" }),
   });
-
-  const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
-  const paginated = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
-
-  useEffect(() => { setPage(1); }, [filterStatus, filterBranch, search]);
-
-  const handleView = (ret) => { setSelectedReturn(ret); setDetailOpen(true); };
-
-  const statusCounts = Object.keys(STATUS_CONFIG).reduce((acc, s) => {
-    acc[s] = allReturns.filter((r) => r.status === s).length;
-    return acc;
-  }, {});
-
-  const stalePendingReturns = useMemo(() => {
-    const threeDaysAgo = Date.now() - 3 * 24 * 60 * 60 * 1000;
-    return allReturns.filter((r) => {
-      if (r.status !== "Pending") return false;
-      const created = new Date(r.created_date).getTime();
-      return created < threeDaysAgo;
-    });
-  }, [allReturns]);
 
   return (
-    <div dir="rtl" className="p-4 md:p-6 space-y-4">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-800 flex items-center gap-2">
-            <RotateCcw className="w-6 h-6 text-teal-600" />
-            المرتجعات
-          </h1>
-          <p className="text-gray-500 text-sm mt-0.5">{filtered.length} مرتجع</p>
+    <div className="p-4 md:p-6 space-y-4" dir="rtl">
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div className="flex items-center gap-2">
+          <RotateCcw className="w-6 h-6 text-teal-600" />
+          <h1 className="text-2xl font-bold text-gray-800">المرتجعات</h1>
         </div>
-        <Button onClick={() => setFormOpen(true)} className="bg-teal-600 hover:bg-teal-700 text-white gap-2">
-          <Plus className="w-4 h-4" /> مرتجع جديد
-        </Button>
-      </div>
-
-      {/* Stale Pending Alert */}
-      {stalePendingReturns.length > 0 && (
-        <div className="bg-orange-50 border border-orange-300 rounded-xl p-3 flex gap-3 items-start">
-          <AlertTriangle className="w-5 h-5 text-orange-500 mt-0.5 shrink-0" />
-          <div>
-            <p className="text-sm font-semibold text-orange-700">{stalePendingReturns.length} مرتجع معلق منذ أكثر من 3 أيام</p>
-            <div className="mt-1 flex flex-wrap gap-1">
-              {stalePendingReturns.map((r) => {
-                const days = Math.floor((Date.now() - new Date(r.created_date).getTime()) / (1000 * 60 * 60 * 24));
-                return (
-                  <button key={r.id} onClick={() => handleView(r)} className="text-xs bg-orange-100 hover:bg-orange-200 text-orange-800 border border-orange-200 rounded-full px-2 py-0.5 transition-colors">
-                    {r.return_number || r.invoice_number} ({days} يوم)
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Status Summary Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-        {Object.entries(STATUS_CONFIG).map(([key, cfg]) => (
-          <button
-            key={key}
-            onClick={() => setFilterStatus(filterStatus === key ? "الكل" : key)}
-            className={`rounded-xl border p-3 text-center transition-all hover:shadow-md ${filterStatus === key ? "ring-2 ring-teal-500 shadow-md" : ""} ${cfg.color}`}
+        <div className="flex items-center gap-2">
+          <Filter className="w-4 h-4 text-gray-400" />
+          <select
+            className="flex h-9 rounded-md border border-input bg-background px-3 py-1 text-sm"
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value)}
           >
-            <div className="text-2xl font-bold">{statusCounts[key] || 0}</div>
-            <div className="text-xs font-medium mt-1">{cfg.label}</div>
-          </button>
-        ))}
-      </div>
-
-      {/* Filters */}
-      <div className="bg-white rounded-xl border p-3 space-y-3">
-        <div className="flex flex-wrap gap-2 items-center">
-          <div className="relative flex-1 min-w-48">
-            <Search className="absolute right-3 top-2.5 w-4 h-4 text-gray-400" />
-            <Input
-              placeholder="بحث برقم المرتجع أو الفاتورة أو المورد..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="pr-9 h-9"
-            />
-          </div>
-          <Select value={filterStatus} onValueChange={setFilterStatus}>
-            <SelectTrigger className="w-40 h-9"><SelectValue placeholder="كل الحالات" /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="الكل">كل الحالات</SelectItem>
-              {Object.entries(STATUS_CONFIG).map(([k, v]) => (
-                <SelectItem key={k} value={k}>{v.label}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="flex gap-2 flex-wrap">
-          {["الكل", ...BRANCHES].map((b) => (
-            <button
-              key={b}
-              onClick={() => setFilterBranch(b)}
-              className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${
-                filterBranch === b ? "bg-teal-600 text-white border-teal-600" : "bg-white text-gray-600 border-gray-200 hover:border-teal-300"
-              }`}
-            >
-              {b}
-            </button>
-          ))}
+            <option value="">كل الحالات</option>
+            {RETURN_STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
         </div>
       </div>
 
-      {/* Table */}
-      <div className="bg-white rounded-xl border overflow-hidden shadow-sm">
-        {isLoading ? (
-          <div className="flex items-center justify-center h-40">
-            <RefreshCw className="w-6 h-6 animate-spin text-teal-500" />
-          </div>
-        ) : paginated.length === 0 ? (
-          <div className="text-center py-16 text-gray-400">
-            <RotateCcw className="w-12 h-12 mx-auto mb-3 opacity-20" />
-            <p>لا توجد مرتجعات</p>
-          </div>
-        ) : (
+      {isLoading ? (
+        <Spinner />
+      ) : returns.length === 0 ? (
+        <Card className="p-12 text-center">
+          <RotateCcw className="w-12 h-12 text-gray-300 mx-auto mb-3" />
+          <p className="text-gray-500">لا توجد مرتجعات {statusFilter ? `بحالة "${statusFilter}"` : ""}</p>
+        </Card>
+      ) : (
+        <Card className="overflow-hidden">
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="bg-gray-50 border-b">
-                <tr>
-                  <th className="text-right px-4 py-3 font-semibold text-gray-600 text-xs">#</th>
-                  <th className="text-right px-4 py-3 font-semibold text-gray-600">رقم الفاتورة</th>
-                  <th className="text-right px-4 py-3 font-semibold text-gray-600">المورد</th>
-                  <th className="text-right px-4 py-3 font-semibold text-gray-600 hidden md:table-cell">الفرع</th>
-                  <th className="text-right px-4 py-3 font-semibold text-gray-600 hidden md:table-cell">الموظف</th>
-                  <th className="text-right px-4 py-3 font-semibold text-gray-600 hidden md:table-cell">سبب المرتجع</th>
-                  <th className="text-right px-4 py-3 font-semibold text-gray-600">الحالة</th>
-                  <th className="text-right px-4 py-3 font-semibold text-gray-600 hidden md:table-cell">التاريخ</th>
-                  <th className="px-4 py-3"></th>
+                <tr className="text-right text-gray-600">
+                  <th className="p-3 font-semibold">رقم المرتجع</th>
+                  <th className="p-3 font-semibold">المورد</th>
+                  <th className="p-3 font-semibold">الفرع</th>
+                  <th className="p-3 font-semibold">التاريخ</th>
+                  <th className="p-3 font-semibold">الحالة</th>
+                  <th className="p-3 font-semibold text-center">إجراءات</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-gray-50">
-                {paginated.map((ret) => {
-                  const cfg = STATUS_CONFIG[ret.status] || STATUS_CONFIG.Pending;
-                  return (
-                    <tr key={ret.id} className="hover:bg-gray-50 transition-colors">
-                      <td className="px-4 py-3 font-mono text-xs text-gray-500">{ret.return_number || "—"}</td>
-                      <td className="px-4 py-3 text-gray-700">{ret.invoice_number}</td>
-                      <td className="px-4 py-3 text-gray-700">{ret.supplier_name}</td>
-                      <td className="px-4 py-3 text-gray-600 hidden md:table-cell">{ret.branch_name}</td>
-                      <td className="px-4 py-3 text-gray-600 hidden md:table-cell">{ret.employee_name}</td>
-                      <td className="px-4 py-3 hidden md:table-cell text-xs text-gray-600">
-                        {ret.items?.length > 0
-                          ? [...new Set(ret.items.map(i => i.item_reason).filter(Boolean))].join("، ") || "—"
-                          : "—"}
-                      </td>
-                      <td className="px-4 py-3">
-                        <span className={`px-2 py-1 rounded-full text-xs font-medium border ${cfg.color}`}>{cfg.label}</span>
-                      </td>
-                      <td className="px-4 py-3 text-gray-500 hidden md:table-cell text-xs">
-                        {ret.created_date ? new Date(ret.created_date).toLocaleDateString("ar-EG") : "—"}
-                      </td>
-                      <td className="px-4 py-3">
-                        <Button size="sm" variant="ghost" onClick={() => handleView(ret)} className="gap-1 text-teal-600">
-                          <Eye className="w-3.5 h-3.5" /> عرض
-                        </Button>
-                      </td>
-                    </tr>
-                  );
-                })}
+              <tbody className="divide-y">
+                {returns.map((r) => (
+                  <tr key={r.id} className="hover:bg-gray-50">
+                    <td className="p-3 font-medium text-gray-800">{r.return_number || "—"}</td>
+                    <td className="p-3 text-gray-600">{r.supplier_name || "—"}</td>
+                    <td className="p-3 text-gray-600">{r.branch_name || r.branch || "—"}</td>
+                    <td className="p-3 text-gray-500">{r.created_date ? new Date(r.created_date).toLocaleDateString("ar-EG") : "—"}</td>
+                    <td className="p-3">
+                      <select
+                        className={`text-xs px-2 py-1 rounded-full border ${STATUS_COLORS[r.status] || "bg-gray-50 text-gray-700 border-gray-200"}`}
+                        value={r.status || ""}
+                        onChange={(e) => statusMutation.mutate({ id: r.id, status: e.target.value })}
+                        disabled={statusMutation.isPending}
+                      >
+                        <option value="">—</option>
+                        {RETURN_STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
+                      </select>
+                    </td>
+                    <td className="p-3 text-center">
+                      <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => setDetailItem(r)}>
+                        <Eye className="w-4 h-4 text-teal-600" />
+                      </Button>
+                    </td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>
-        )}
-
-        {/* Pagination */}
-        {totalPages > 1 && (
-          <div className="flex items-center justify-between px-4 py-3 border-t bg-gray-50">
-            <span className="text-sm text-gray-500">صفحة {page} من {totalPages}</span>
-            <div className="flex gap-2">
-              <Button size="sm" variant="outline" disabled={page === 1} onClick={() => setPage(p => p - 1)}>السابق</Button>
-              <Button size="sm" variant="outline" disabled={page === totalPages} onClick={() => setPage(p => p + 1)}>التالي</Button>
-            </div>
-          </div>
-        )}
-      </div>
-
-      <ReturnFormDialog
-        open={formOpen}
-        onOpenChange={setFormOpen}
-        onSuccess={() => queryClient.invalidateQueries({ queryKey: ["returns"] })}
-      />
-
-      {selectedReturn && (
-        <ReturnDetailDialog
-          open={detailOpen}
-          onOpenChange={setDetailOpen}
-          returnData={selectedReturn}
-          onUpdated={(updated) => {
-            setSelectedReturn(updated);
-            queryClient.invalidateQueries({ queryKey: ["returns"] });
-          }}
-          onDeleted={() => queryClient.invalidateQueries({ queryKey: ["returns"] })}
-        />
+        </Card>
       )}
+
+      {/* Detail Dialog */}
+      <Dialog open={!!detailItem} onOpenChange={(v) => !v && setDetailItem(null)}>
+        <DialogHeader>
+          <DialogTitle>تفاصيل المرتجع {detailItem?.return_number || ""}</DialogTitle>
+          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setDetailItem(null)}>✕</Button>
+        </DialogHeader>
+        <DialogContent className="space-y-4">
+          {detailItem && (
+            <>
+              <div className="grid grid-cols-2 gap-3 text-sm">
+                <div><span className="text-gray-500">المورد:</span> <span className="font-medium">{detailItem.supplier_name || "—"}</span></div>
+                <div><span className="text-gray-500">الفرع:</span> <span className="font-medium">{detailItem.branch_name || detailItem.branch || "—"}</span></div>
+                <div><span className="text-gray-500">التاريخ:</span> <span className="font-medium">{detailItem.created_date ? new Date(detailItem.created_date).toLocaleDateString("ar-EG") : "—"}</span></div>
+                <div><span className="text-gray-500">الحالة:</span> <span className="font-medium">{detailItem.status || "—"}</span></div>
+              </div>
+              <div className="border-t pt-3">
+                <p className="text-sm font-semibold text-gray-700 mb-2 flex items-center gap-1">
+                  <Package className="w-4 h-4" /> الأصناف
+                </p>
+                {(() => {
+                  const items = typeof detailItem.items === "object" ? detailItem.items : null;
+                  const arr = Array.isArray(items) ? items : items ? [items] : [];
+                  if (arr.length === 0) return <p className="text-sm text-gray-400">لا توجد أصناف</p>;
+                  return (
+                    <div className="space-y-2">
+                      {arr.map((item, idx) => (
+                        <div key={idx} className="bg-gray-50 rounded-lg p-3 text-sm">
+                          <div className="flex justify-between mb-1">
+                            <span className="font-medium text-gray-800">{item.name || item.medicine_name || `صنف ${idx + 1}`}</span>
+                            <span className="text-teal-700 font-semibold">{(item.total || item.price || 0).toLocaleString("ar-EG")} ج</span>
+                          </div>
+                          <div className="flex gap-4 text-xs text-gray-500">
+                            <span>الكمية: {item.quantity || "—"}</span>
+                            <span>السعر: {(item.price || 0).toLocaleString("ar-EG")}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })()}
+              </div>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

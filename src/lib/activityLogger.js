@@ -13,6 +13,6 @@ export async function logActivity({ action_type, entity_type, entity_id, entity_
       details: details || "",
     });
   } catch (e) {
-    // silent fail - logging should never break the main flow
+    // silent fail
   }
 }

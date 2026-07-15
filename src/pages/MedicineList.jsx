@@ -1,130 +1,133 @@
+import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { base44 } from "@/api/base44Client";
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import MedicineDashboard from "@/components/medicine/MedicineDashboard";
-import MedicineSalesTab from "@/components/medicine/MedicineSalesTab";
-import MedicineItemsAdmin from "@/components/medicine/MedicineItemsAdmin";
-import { useUserRole } from "@/lib/useUserRole";
+import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import { FlaskConical, Loader2, Calendar, Building2 } from "lucide-react";
 
-const BRANCHES = ["فرع زكريا", "فرع بسيسة", "فرع المنشية"];
-
-function BranchBalanceTable() {
-  const { data: items = [] } = useQuery({
-    queryKey: ["medicine-items"],
-    queryFn: () => base44.entities.MedicineItem.list("name"),
-    staleTime: 60000,
-  });
-  const { data: allRecords = [] } = useQuery({
-    queryKey: ["medicine-all-records"],
-    queryFn: () => base44.entities.MedicineSale.list("-created_date", 1000),
-    staleTime: 15000,
-  });
-
-  const activeItems = items.filter((i) => i.is_active !== false);
-  const balanceRecords = allRecords.filter((r) => r.record_type === "balance");
-  const sorted = [...balanceRecords].sort((a, b) => new Date(b.created_date) - new Date(a.created_date));
-
-  if (activeItems.length === 0 || balanceRecords.length === 0) return null;
-
-  // لكل فرع: قائمة أصنافه وأرصدتها من أحدث سجل
-  const branchItemBalances = {};
-  BRANCHES.forEach((branch) => {
-    branchItemBalances[branch] = {};
-    activeItems.forEach((item) => {
-      const record = sorted.find(
-        (r) => r.branch === branch && (r.sales || []).some((x) => x.medicine_id === item.id || x.medicine_name === item.name)
-      );
-      if (record) {
-        const entry = (record.sales || []).find((x) => x.medicine_id === item.id || x.medicine_name === item.name);
-        const val = entry?.balance;
-        branchItemBalances[branch][item.id] = (val !== undefined && val !== null) ? Number(val) : null;
-      } else {
-        branchItemBalances[branch][item.id] = null;
-      }
-    });
-  });
-
+function Spinner() {
   return (
-    <div className="mt-8">
-      <h2 className="text-base font-semibold text-gray-700 mb-4">رصيد كل فرع من كل صنف</h2>
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {BRANCHES.map((branch, bi) => {
-          const colors = [
-            { header: "bg-blue-700", row: "bg-blue-50", val: "text-blue-700", border: "border-blue-200" },
-            { header: "bg-purple-700", row: "bg-purple-50", val: "text-purple-700", border: "border-purple-200" },
-            { header: "bg-orange-700", row: "bg-orange-50", val: "text-orange-700", border: "border-orange-200" },
-          ][bi];
-          const total = activeItems.reduce((s, item) => {
-            const v = branchItemBalances[branch][item.id];
-            return s + (v !== null && v !== undefined ? v : 0);
-          }, 0);
-          return (
-            <div key={branch} className={`rounded-xl border ${colors.border} overflow-hidden`}>
-              <div className={`${colors.header} text-white px-4 py-2.5 flex justify-between items-center`}>
-                <span className="font-bold text-sm">{branch}</span>
-                <span className="text-xs opacity-80">الإجمالي: {total.toLocaleString("ar-EG")}</span>
-              </div>
-              <table className="w-full text-sm" dir="rtl">
-                <thead className="bg-gray-50 border-b">
-                  <tr>
-                    <th className="px-3 py-2 text-right text-xs font-semibold text-gray-500">الصنف</th>
-                    <th className="px-3 py-2 text-center text-xs font-semibold text-gray-500">الرصيد</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {activeItems.map((item, idx) => {
-                    const val = branchItemBalances[branch][item.id];
-                    return (
-                      <tr key={item.id} className={idx % 2 === 0 ? "bg-white" : colors.row}>
-                        <td className="px-3 py-2 font-medium text-gray-700">{item.name}</td>
-                        <td className="px-3 py-2 text-center">
-                          <span className={`font-bold ${val !== null && val !== undefined ? colors.val : "text-gray-300"}`}>
-                            {val !== null && val !== undefined ? val.toLocaleString("ar-EG") : "—"}
-                          </span>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          );
-        })}
-      </div>
+    <div className="flex items-center justify-center py-20">
+      <Loader2 className="w-8 h-8 text-teal-600 animate-spin" />
     </div>
   );
 }
 
+function getWeekLabel(dateStr) {
+  if (!dateStr) return "غير محدد";
+  const d = new Date(dateStr);
+  const year = d.getFullYear();
+  const start = new Date(year, 0, 1);
+  const diff = (d - start) / 86400000;
+  const weekNum = Math.ceil((diff + start.getDay() + 1) / 7);
+  return `أسبوع ${weekNum} - ${year}`;
+}
+
+function getWeekKey(dateStr) {
+  if (!dateStr) return "unknown";
+  const d = new Date(dateStr);
+  const year = d.getFullYear();
+  const start = new Date(year, 0, 1);
+  const diff = (d - start) / 86400000;
+  const weekNum = Math.ceil((diff + start.getDay() + 1) / 7);
+  return `${year}-W${weekNum}`;
+}
+
 export default function MedicineList() {
-  const { isAdmin, isManager } = useUserRole();
+  const { data: sales = [], isLoading } = useQuery({
+    queryKey: ["medicine-sales"],
+    queryFn: () => base44.entities.MedicineSale.list("-created_date", 2000),
+  });
+
+  const grouped = useMemo(() => {
+    const map = new Map();
+    for (const sale of sales) {
+      const dateStr = sale.created_date || sale.invoice_date || sale.date;
+      const weekKey = getWeekKey(dateStr);
+      const weekLabel = getWeekLabel(dateStr);
+      if (!map.has(weekKey)) {
+        map.set(weekKey, { weekKey, weekLabel, items: [] });
+      }
+      map.get(weekKey).items.push(sale);
+    }
+    return Array.from(map.values()).sort((a, b) => b.weekKey.localeCompare(a.weekKey));
+  }, [sales]);
 
   return (
-    <div dir="rtl" className="p-4 md:p-6 space-y-4">
-      <div>
+    <div className="p-4 md:p-6 space-y-4" dir="rtl">
+      <div className="flex items-center gap-2">
+        <FlaskConical className="w-6 h-6 text-teal-600" />
         <h1 className="text-2xl font-bold text-gray-800">أدوية اللسته</h1>
-        <p className="text-gray-500 text-sm mt-0.5">متابعة مبيعات الأصناف الأسبوعية</p>
       </div>
 
-      <Tabs defaultValue="dashboard">
-        <TabsList className="mb-4">
-          <TabsTrigger value="dashboard">أصناف اللسته</TabsTrigger>
-          <TabsTrigger value="sales">تسجيل المبيعات</TabsTrigger>
-          {(isAdmin || isManager) && <TabsTrigger value="admin">إدارة الأصناف</TabsTrigger>}
-        </TabsList>
-
-        <TabsContent value="dashboard">
-          <MedicineDashboard />
-          <BranchBalanceTable />
-        </TabsContent>
-        <TabsContent value="sales">
-          <MedicineSalesTab />
-        </TabsContent>
-        {(isAdmin || isManager) && (
-          <TabsContent value="admin">
-            <MedicineItemsAdmin />
-          </TabsContent>
-        )}
-      </Tabs>
+      {isLoading ? (
+        <Spinner />
+      ) : grouped.length === 0 ? (
+        <Card className="p-12 text-center">
+          <FlaskConical className="w-12 h-12 text-gray-300 mx-auto mb-3" />
+          <p className="text-gray-500">لا توجد بيانات مبيعات أدوية</p>
+        </Card>
+      ) : (
+        <div className="space-y-4">
+          {grouped.map((group) => (
+            <Card key={group.weekKey} className="overflow-hidden">
+              <CardHeader className="bg-teal-50/50 border-b py-3">
+                <div className="flex items-center gap-2">
+                  <Calendar className="w-4 h-4 text-teal-600" />
+                  <CardTitle className="text-base">{group.weekLabel}</CardTitle>
+                  <span className="text-xs text-gray-500 mr-2">({group.items.length} سجل)</span>
+                </div>
+              </CardHeader>
+              <CardContent className="p-0">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead className="bg-gray-50 border-b">
+                      <tr className="text-right text-gray-600">
+                        <th className="p-2.5 font-semibold">الفرع</th>
+                        <th className="p-2.5 font-semibold">اسم الدواء</th>
+                        <th className="p-2.5 font-semibold">الكمية</th>
+                        <th className="p-2.5 font-semibold">السعر</th>
+                        <th className="p-2.5 font-semibold">الإجمالي</th>
+                        <th className="p-2.5 font-semibold">التاريخ</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y">
+                      {group.items.map((sale) => {
+                        const saleData = typeof sale.sales === "object" ? sale.sales : null;
+                        const items = saleData?.items || saleData?.medicines || [];
+                        return (
+                          <tr key={sale.id} className="hover:bg-gray-50">
+                            <td className="p-2.5">
+                              <span className="flex items-center gap-1 text-gray-700">
+                                <Building2 className="w-3 h-3 text-gray-400" />
+                                {sale.branch || "—"}
+                              </span>
+                            </td>
+                            <td className="p-2.5 text-gray-700">
+                              {saleData?.name || saleData?.medicine_name || items[0]?.name || "—"}
+                            </td>
+                            <td className="p-2.5 text-gray-600">
+                              {saleData?.quantity || items[0]?.quantity || "—"}
+                            </td>
+                            <td className="p-2.5 text-gray-600">
+                              {(saleData?.price || items[0]?.price || 0).toLocaleString("ar-EG")}
+                            </td>
+                            <td className="p-2.5 font-semibold text-teal-700">
+                              {(saleData?.total || sale.total_value || 0).toLocaleString("ar-EG")} ج
+                            </td>
+                            <td className="p-2.5 text-gray-500 text-xs">
+                              {(sale.created_date || sale.invoice_date || "").split("T")[0]}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

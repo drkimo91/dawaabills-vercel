@@ -49,21 +49,16 @@ export const AuthProvider = ({ children }) => {
 
   useEffect(() => {
     mountedRef.current = true;
-
     checkUserAuth();
 
     const { data: listener } = supabase.auth.onAuthStateChange((event, session) => {
       if (!mountedRef.current) return;
-
-      // Ignore INITIAL_SESSION — we already check via checkUserAuth
       if (event === 'INITIAL_SESSION') return;
 
       if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
         if (session) {
           setIsLoadingAuth(true);
-          (async () => {
-            await checkUserAuth();
-          })();
+          (async () => { await checkUserAuth(); })();
         }
       } else if (event === 'SIGNED_OUT') {
         setUser(null);
@@ -90,15 +85,7 @@ export const AuthProvider = ({ children }) => {
   };
 
   return (
-    <AuthContext.Provider value={{
-      user,
-      isAuthenticated,
-      isLoadingAuth,
-      authError,
-      authChecked,
-      logout,
-      checkUserAuth,
-    }}>
+    <AuthContext.Provider value={{ user, isAuthenticated, isLoadingAuth, authError, authChecked, logout, checkUserAuth }}>
       {children}
     </AuthContext.Provider>
   );
@@ -106,8 +93,6 @@ export const AuthProvider = ({ children }) => {
 
 export const useAuth = () => {
   const context = useContext(AuthContext);
-  if (!context) {
-    throw new Error('useAuth must be used within an AuthProvider');
-  }
+  if (!context) throw new Error('useAuth must be used within an AuthProvider');
   return context;
 };

@@ -5,28 +5,25 @@ export function useUserRole() {
   const { data: user } = useQuery({
     queryKey: ["current-user"],
     queryFn: () => base44.auth.me(),
+    retry: false,
   });
 
   const role = user?.role || "viewer";
   const isAdmin = role === "admin";
   const isManager = role === "admin" || role === "manager";
   const isViewer = role === "viewer";
-
-  // delivery roles: مندوب / مشرف / أدمن
   const deliveryRole = user?.delivery_role || null;
   const isDeliveryRider = deliveryRole === "مندوب";
   const isDeliverySupervisor = deliveryRole === "مشرف";
   const isDeliveryAdmin = deliveryRole === "أدمن";
   const hasDeliveryAccess = isDeliveryRider || isDeliverySupervisor || isDeliveryAdmin || isAdmin;
 
-  const canDeleteInvoice = isAdmin || !!user?.can_delete_invoice;
-  const canSaveInvoice = isAdmin || role === "manager" || !!user?.can_save_invoice;
-  const canManageTeam = isAdmin || !!user?.can_manage_team;
-  const canSetBudget = isAdmin || !!user?.can_set_budget;
-
   return {
     role, isAdmin, isManager, isViewer, user,
-    canDeleteInvoice, canSaveInvoice, canManageTeam, canSetBudget,
+    canDeleteInvoice: isAdmin || !!user?.can_delete_invoice,
+    canSaveInvoice: isAdmin || role === "manager" || !!user?.can_save_invoice,
+    canManageTeam: isAdmin || !!user?.can_manage_team,
+    canSetBudget: isAdmin || !!user?.can_set_budget,
     deliveryRole, isDeliveryRider, isDeliverySupervisor, isDeliveryAdmin, hasDeliveryAccess,
   };
 }
